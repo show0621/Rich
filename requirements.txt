@@ -1,5 +1,6 @@
-FinMind
-pandas
 streamlit
+pandas
 plotly
 ta
+tqdm
+FinMind
