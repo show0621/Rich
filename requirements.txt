@@ -1,5 +1,5 @@
 FinMind
 pandas
-pandas_ta
 streamlit
 plotly
+ta
