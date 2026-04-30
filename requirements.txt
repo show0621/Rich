@@ -1,6 +1,6 @@
-streamlit
+FinMind
 pandas
+streamlit
 plotly
 ta
 tqdm
-FinMind
