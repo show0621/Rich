@@ -43,46 +43,65 @@ cols = st.columns(len(metrics))
 for i, (label, val) in enumerate(metrics.items()): cols[i].metric(label, val)
 
 st.subheader("📺 視覺化圖表：進出場與停損停利標示 (5分K)")
-# 💡 將視野擴大到 600 根 K 線 (約兩個半天)，確保看得到完整的交易閉環
 recent = df_raw.tail(600) 
+
+# 🎨 1. K線在地化配色：改為台灣習慣的「紅漲綠跌」
 fig = go.Figure(data=[go.Candlestick(
     x=recent['datetime'], open=recent['open'], high=recent['high'],
-    low=recent['low'], close=recent['close'], name="微台 K線"
+    low=recent['low'], close=recent['close'], name="微台 K線",
+    increasing_line_color='#FF3333', increasing_fillcolor='#FF3333', # 紅漲
+    decreasing_line_color='#00CC00', decreasing_fillcolor='#00CC00'  # 綠跌
 )])
 
+# ✂️ 2. 斷點縫合魔法：根據選擇的時段，裁掉沒有交易的時間
+rangebreaks = [dict(bounds=["sat", "mon"])] # 永遠隱藏週末
+if "日盤" in session:
+    rangebreaks.append(dict(bounds=["13:45", "08:45"])) # 隱藏 13:45 到隔天 08:45
+elif "夜盤" in session:
+    rangebreaks.append(dict(bounds=["05:00", "15:00"])) # 隱藏 05:00 到下午 15:00
+else: # 全時段
+    rangebreaks.append(dict(bounds=["05:00", "08:45"])) # 隱藏早上的休息空檔
+    rangebreaks.append(dict(bounds=["13:45", "15:00"])) # 隱藏下午的休息空檔
+
+# 標記進出場訊號
 if trades:
     r_start = recent['datetime'].iloc[0]
     rt = [t for t in trades if t['time'] >= r_start]
     
-    # 💡 修改顏色與增加邊框，確保在亮色/暗色背景都極度清晰
     signals = {
-        '多單進場': ('triangle-up', 16, '#FF3333'),    # 亮紅色
-        '空單進場': ('triangle-down', 16, '#00CC00'),  # 亮綠色
-        '停利出場': ('star', 18, '#FFD700'),           # 黃金星
-        '停損出場': ('x', 14, '#000000'),              # 黑色大叉叉
-        '反轉平倉': ('square', 12, '#3366FF')          # 藍色方塊
+        '多單進場': ('triangle-up', 16, '#FF3333'),
+        '空單進場': ('triangle-down', 16, '#00CC00'),
+        '停利出場': ('star', 18, '#FFD700'),
+        '停損出場': ('x', 14, '#000000'), 
+        '反轉平倉': ('square', 12, '#3366FF')
     }
-    
     for desc, (sym, size, color) in signals.items():
         subset = [t for t in rt if t['desc'] == desc]
         if subset:
             fig.add_trace(go.Scatter(
                 x=[t['time'] for t in subset], y=[t['price'] for t in subset],
                 mode='markers', 
-                marker=dict(
-                    symbol=sym, 
-                    size=size, 
-                    color=color,
-                    # 幫除了叉叉以外的圖標加上黑色外框
-                    line=dict(width=1.5, color='black') if sym != 'x' else None 
-                ), 
+                marker=dict(symbol=sym, size=size, color=color, line=dict(width=1.5, color='white' if sym=='x' else 'black')), 
                 name=desc
             ))
 
-fig.update_layout(height=650, template="plotly_dark", xaxis_rangeslider_visible=False)
+# 🌟 3. 版面精緻化：加入無縫 X 軸、優化網格線
+fig.update_xaxes(
+    rangebreaks=rangebreaks, 
+    showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.2)', zeroline=False
+)
+fig.update_yaxes(
+    showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.2)', zeroline=False
+)
+fig.update_layout(
+    height=700, 
+    xaxis_rangeslider_visible=False,
+    margin=dict(l=40, r=40, t=40, b=40),
+    hovermode='x unified' # 滑鼠游標對齊效果
+)
 
-# 💡 關鍵修復：加入 theme=None，強制 Streamlit 尊重我們設定的暗色背景與圖標設計
-st.plotly_chart(fig, use_container_width=True, theme=None)
+# 讓 Streamlit 接管背景主題，完美融入您的系統
+st.plotly_chart(fig, use_container_width=True)
 
 with st.expander("📝 展開查看近期交易明細"):
     if trades:
