@@ -18,7 +18,7 @@ class MTXDatabase:
         try:
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 404 or not response.content.startswith(b'PK'):
-                return pd.DataFrame() # 找不到檔案或非 ZIP 檔
+                return pd.DataFrame() 
             
             z = zipfile.ZipFile(io.BytesIO(response.content))
             csv_filename = z.namelist()[0]
@@ -28,16 +28,13 @@ class MTXDatabase:
             df_mtx = df[df['商品代號'].str.strip() == 'MTX'].copy()
             if df_mtx.empty: return pd.DataFrame()
 
-            # 自動換倉邏輯：找成交量最大的月份
             df_mtx['成交數量(B+S)'] = df_mtx['成交數量(B+S)'].astype(int)
             front_month = df_mtx.groupby('到期月份(週別)')['成交數量(B+S)'].sum().idxmax()
             df_front = df_mtx[df_mtx['到期月份(週別)'] == front_month].copy()
             
-            # 轉換時間與價格
             df_front['datetime'] = pd.to_datetime(df_front['成交日期'] + ' ' + df_front['成交時間'], format='%Y%m%d %H%M%S')
             df_front['price'] = df_front['成交價格'].astype(float)
             
-            # Resample 成 1分 K
             df_front.set_index('datetime', inplace=True)
             df_1m = df_front.resample('1min').agg({'price': 'ohlc', '成交數量(B+S)': 'sum'}).dropna()
             df_1m.columns = ['open', 'high', 'low', 'close', 'volume']
@@ -48,33 +45,44 @@ class MTXDatabase:
             return pd.DataFrame()
 
     def update_data(self, target_days=3):
-        """抓取最近 N 個有效交易日寫入資料庫"""
+        """抓取最新資料，並與舊資料庫完美融合累積"""
         today = datetime.today()
-        all_data = []
+        new_data_list = []
         days_collected = 0
         days_lookback = 0
         
+        # 1. 抓取新資料
         while days_collected < target_days and days_lookback < 15:
             days_lookback += 1
             target_date = today - timedelta(days=days_lookback)
-            
-            if target_date.weekday() >= 5: continue # 跳過週末
+            if target_date.weekday() >= 5: continue
                 
             date_str = target_date.strftime("%Y_%m_%d")
             df = self.fetch_single_day(date_str)
             
             if not df.empty:
-                all_data.append(df)
+                new_data_list.append(df)
                 days_collected += 1
+            time.sleep(1)
             
-            time.sleep(1) # 禮貌性延遲
-            
-        if all_data:
-            final_df = pd.concat(all_data, ignore_index=True)
-            final_df.sort_values('datetime', inplace=True)
-            final_df.to_sql("kline_1m", self.conn, if_exists="replace", index=False)
-            return True
-        return False
+        if not new_data_list:
+            return False
+
+        new_df = pd.concat(new_data_list, ignore_index=True)
+
+        # 2. 讀取舊資料庫進行合併與去重 (累積引擎的核心)
+        existing_df = self.load_data()
+        if not existing_df.empty:
+            final_df = pd.concat([existing_df, new_df], ignore_index=True)
+            # 依據時間去重，保留最新的資料
+            final_df.drop_duplicates(subset=['datetime'], keep='last', inplace=True)
+        else:
+            final_df = new_df
+
+        # 3. 排序後存回資料庫
+        final_df.sort_values('datetime', inplace=True)
+        final_df.to_sql("kline_1m", self.conn, if_exists="replace", index=False)
+        return True
 
     def load_data(self):
         try:
