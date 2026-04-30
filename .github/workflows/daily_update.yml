@@ -15,10 +15,10 @@ jobs:
 
     steps:
     - name: 📥 結帳取得您的程式碼
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4  # 升級到 v4，解決 Node.js 警告
 
     - name: 🐍 設定 Python 環境 (3.11)
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5 # 升級到 v5，解決 Node.js 警告
       with:
         python-version: '3.11'
 
@@ -35,5 +35,4 @@ jobs:
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
         git add mtx_data.db
-        # 如果資料庫有變更，就提交並推送；如果沒有變更（例如遇到假日），就略過不報錯
         git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 自動更新微台指 1分K 資料庫" && git push)
