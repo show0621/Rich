@@ -1,5 +1,4 @@
 import pandas as pd
-import ta
 
 class MomentumBacktester:
     def __init__(self, df_1m):
@@ -23,17 +22,22 @@ class MomentumBacktester:
         df_30m = df.resample('30min').agg({'open':'first','high':'max','low':'min','close':'last'}).dropna()
         df_5m = df.resample('5min').agg({'open':'first','high':'max','low':'min','close':'last'}).dropna()
 
-        # 防彈機制 1: 確保價格為浮點數，防止 SQLite 讀成字串
         df_30m['close'] = df_30m['close'].astype(float)
         df_5m['close'] = df_5m['close'].astype(float)
 
-        # 防彈機制 2: 相容 ta 套件的新舊版本參數 (window vs n)
-        try:
-            df_30m['EMA20'] = ta.trend.ema_indicator(df_30m['close'], window=20)
-            df_5m['RSI'] = ta.momentum.rsi(df_5m['close'], window=14)
-        except TypeError:
-            df_30m['EMA20'] = ta.trend.ema_indicator(df_30m['close'], n=20)
-            df_5m['RSI'] = ta.momentum.rsi(df_5m['close'], n=14)
+        # 💡 原生 Pandas 指標引擎 (無須依賴任何外部套件，永不報錯)
+        # 1. 計算 EMA20
+        df_30m['EMA20'] = df_30m['close'].ewm(span=20, adjust=False).mean()
+
+        # 2. 計算 RSI14 (使用 Wilder's Smoothing)
+        diff = df_5m['close'].diff()
+        up = diff.where(diff > 0, 0.0)
+        down = -diff.where(diff < 0, 0.0)
+        ema_up = up.ewm(alpha=1/14, adjust=False).mean()
+        ema_down = down.ewm(alpha=1/14, adjust=False).mean()
+        rs = ema_up / ema_down
+        df_5m['RSI'] = 100 - (100 / (1 + rs))
+        df_5m['RSI'] = df_5m['RSI'].fillna(50) # 防止開頭計算為 NaN
 
         trades = []
         position = 0  
