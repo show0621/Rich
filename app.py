@@ -28,7 +28,6 @@ if df_raw.empty:
 st.subheader("⚙️ 策略參數與風險管理設定")
 col1, col2, col3, col4 = st.columns(4)
 with col1: 
-    # 動態顯示資料庫涵蓋的時間範圍
     db_start = df_raw['datetime'].iloc[0].strftime('%Y-%m-%d')
     db_end = df_raw['datetime'].iloc[-1].strftime('%Y-%m-%d')
     mode = st.radio("回測資料庫範圍", [f"{db_start} 至 {db_end}"])
@@ -37,7 +36,9 @@ with col3: sl_points = st.number_input("強制停損點數", min_value=10, max_v
 with col4: tp_points = st.number_input("強制停利點數", min_value=10, max_value=200, value=40, step=5)
 
 tester = MomentumBacktester(df_raw)
-metrics, trades = tester.run_strategy(start_dt=db_start, session_type=session, sl_points=sl_points, tp_points=tp_points)
+
+# 💡 這裡已經修正：將 start_dt 改為 start_date
+metrics, trades = tester.run_strategy(start_date=db_start, session_type=session, sl_points=sl_points, tp_points=tp_points)
 
 st.subheader(f"📈 績效表現：{session} | 停損 {sl_points}點 / 停利 {tp_points}點")
 cols = st.columns(len(metrics))
