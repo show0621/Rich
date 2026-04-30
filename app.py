@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="微台動能雲端監控", layout="wide")
 db = MTXDatabase()
 
-st.title("🚀 微台指 5/15/30分 動能當沖監控 (ATR 動態風險)")
+st.title("🚀 微台指 5/15/30分 動能當沖監控 (ATR 移動停利)")
 
 with st.sidebar:
     st.header("📊 數據控制中心")
@@ -32,14 +32,13 @@ with col1:
     db_end = df_raw['datetime'].iloc[-1].strftime('%Y-%m-%d')
     mode = st.radio("回測資料庫範圍", [f"{db_start} 至 {db_end}"])
 with col2: session = st.selectbox("監控時段", ["全時段", "日盤 (08:45-13:45)", "夜盤 (15:00-05:00)"])
-# 🚀 修改為 ATR 倍數控制
-with col3: sl_multi = st.number_input("停損 ATR 倍數", min_value=0.5, max_value=5.0, value=1.5, step=0.1)
-with col4: tp_multi = st.number_input("停利 ATR 倍數", min_value=1.0, max_value=10.0, value=3.0, step=0.1)
+with col3: sl_multi = st.number_input("追蹤停損 ATR 倍數", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
+with col4: tp_multi = st.number_input("極限停利 ATR 倍數", min_value=1.0, max_value=20.0, value=5.0, step=0.5, help="用來吃暴漲暴跌的長K線，一般交由移動停損出場")
 
 tester = MomentumBacktester(df_raw)
 metrics, trades = tester.run_strategy(start_date=db_start, session_type=session, sl_multi=sl_multi, tp_multi=tp_multi)
 
-st.subheader(f"📈 績效表現：{session} | 停損 {sl_multi}x ATR / 停利 {tp_multi}x ATR")
+st.subheader(f"📈 績效表現：{session} | 追蹤 {sl_multi}x ATR / 極限 {tp_multi}x ATR")
 cols = st.columns(len(metrics))
 for i, (label, val) in enumerate(metrics.items()): cols[i].metric(label, val)
 
@@ -66,12 +65,14 @@ if trades:
     r_start = recent['datetime'].iloc[0]
     rt = [t for t in trades if t['time'] >= r_start]
     
+    # 對應新的動作描述，換上更精確的圖示
     signals = {
         '多單進場': ('triangle-up', 16, '#FF3333'),
         '空單進場': ('triangle-down', 16, '#00CC00'),
-        '停利出場': ('star', 18, '#FFD700'),
-        '停損出場': ('x', 14, '#000000'), 
-        '反轉平倉': ('square', 12, '#3366FF')
+        '極限目標出場': ('star', 18, '#FFD700'),           # 吃大單邊
+        '移動停利出場': ('diamond', 14, '#FF9900'),        # 賺錢出場 (橘色鑽石)
+        '初始停損出場': ('x', 14, '#000000'),              # 賠錢出場 (黑色叉叉)
+        '動能反轉平倉': ('square', 12, '#3366FF')
     }
     for desc, (sym, size, color) in signals.items():
         subset = [t for t in rt if t['desc'] == desc]
