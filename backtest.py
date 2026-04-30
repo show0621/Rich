@@ -6,7 +6,7 @@ class MomentumBacktester:
         self.point_value = 10  
         self.cost = 2          
 
-    def run_strategy(self, start_date, session_type="全時段", sl_points=20, tp_points=40):
+    def run_strategy(self, start_date, session_type="全時段", sl_multi=1.5, tp_multi=3.0):
         try:
             df = self.df_1m.loc[start_date:].copy()
         except KeyError:
@@ -22,14 +22,15 @@ class MomentumBacktester:
         df_30m = df.resample('30min').agg({'open':'first','high':'max','low':'min','close':'last'}).dropna()
         df_5m = df.resample('5min').agg({'open':'first','high':'max','low':'min','close':'last'}).dropna()
 
+        # 確保價格為浮點數
         df_30m['close'] = df_30m['close'].astype(float)
-        df_5m['close'] = df_5m['close'].astype(float)
+        for col in ['open', 'high', 'low', 'close']:
+            df_5m[col] = df_5m[col].astype(float)
 
-        # 💡 原生 Pandas 指標引擎 (無須依賴任何外部套件，永不報錯)
         # 1. 計算 EMA20
         df_30m['EMA20'] = df_30m['close'].ewm(span=20, adjust=False).mean()
 
-        # 2. 計算 RSI14 (使用 Wilder's Smoothing)
+        # 2. 計算 RSI14
         diff = df_5m['close'].diff()
         up = diff.where(diff > 0, 0.0)
         down = -diff.where(diff < 0, 0.0)
@@ -37,11 +38,20 @@ class MomentumBacktester:
         ema_down = down.ewm(alpha=1/14, adjust=False).mean()
         rs = ema_up / ema_down
         df_5m['RSI'] = 100 - (100 / (1 + rs))
-        df_5m['RSI'] = df_5m['RSI'].fillna(50) # 防止開頭計算為 NaN
+        df_5m['RSI'] = df_5m['RSI'].fillna(50)
+
+        # 🚀 3. 計算 ATR (14期真實波動幅度)
+        tr1 = df_5m['high'] - df_5m['low']
+        tr2 = (df_5m['high'] - df_5m['close'].shift(1)).abs()
+        tr3 = (df_5m['low'] - df_5m['close'].shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        df_5m['ATR'] = tr.rolling(window=14).mean().bfill() # 平滑計算並填補開頭空值
 
         trades = []
         position = 0  
         entry_price = 0
+        target_sl = 0
+        target_tp = 0
 
         for i in range(1, len(df_5m)):
             curr_time = df_5m.index[i]
@@ -54,38 +64,46 @@ class MomentumBacktester:
             low = df_5m['low'].iloc[i]
             rsi = df_5m['RSI'].iloc[i]
             prev_rsi = df_5m['RSI'].iloc[i-1]
+            current_atr = df_5m['ATR'].iloc[i] # 取得當下 K 線的 ATR
 
-            if position == 1:
-                if low <= entry_price - sl_points:
-                    trades.append({'time': curr_time, 'type': 'SELL', 'price': entry_price - sl_points, 'desc': '停損出場'})
+            if position == 1: # 多單持倉
+                if low <= target_sl:
+                    trades.append({'time': curr_time, 'type': 'SELL', 'price': target_sl, 'desc': '停損出場'})
                     position = 0
-                elif high >= entry_price + tp_points:
-                    trades.append({'time': curr_time, 'type': 'SELL', 'price': entry_price + tp_points, 'desc': '停利出場'})
+                elif high >= target_tp:
+                    trades.append({'time': curr_time, 'type': 'SELL', 'price': target_tp, 'desc': '停利出場'})
                     position = 0
                 elif price < last_trend['EMA20'] and rsi < 50 and prev_rsi >= 50:
                     trades.append({'time': curr_time, 'type': 'SELL', 'price': price, 'desc': '反轉平倉'})
                     position = 0
 
-            elif position == -1:
-                if high >= entry_price + sl_points:
-                    trades.append({'time': curr_time, 'type': 'BUY', 'price': entry_price + sl_points, 'desc': '停損出場'})
+            elif position == -1: # 空單持倉
+                if high >= target_sl:
+                    trades.append({'time': curr_time, 'type': 'BUY', 'price': target_sl, 'desc': '停損出場'})
                     position = 0
-                elif low <= entry_price - tp_points:
-                    trades.append({'time': curr_time, 'type': 'BUY', 'price': entry_price - tp_points, 'desc': '停利出場'})
+                elif low <= target_tp:
+                    trades.append({'time': curr_time, 'type': 'BUY', 'price': target_tp, 'desc': '停利出場'})
                     position = 0
                 elif price > last_trend['EMA20'] and rsi > 50 and prev_rsi <= 50:
                     trades.append({'time': curr_time, 'type': 'BUY', 'price': price, 'desc': '反轉平倉'})
                     position = 0
 
-            if position == 0:
+            if position == 0: # 空手尋找進場
                 if price > last_trend['EMA20'] and rsi > 50 and prev_rsi <= 50:
-                    trades.append({'time': curr_time, 'type': 'BUY', 'price': price, 'desc': '多單進場'})
+                    entry_price = price
+                    # 動態計算停損停利點位
+                    target_sl = entry_price - (current_atr * sl_multi)
+                    target_tp = entry_price + (current_atr * tp_multi)
+                    trades.append({'time': curr_time, 'type': 'BUY', 'price': entry_price, 'desc': '多單進場'})
                     position = 1
-                    entry_price = price
+                    
                 elif price < last_trend['EMA20'] and rsi < 50 and prev_rsi >= 50:
-                    trades.append({'time': curr_time, 'type': 'SELL', 'price': price, 'desc': '空單進場'})
-                    position = -1
                     entry_price = price
+                    # 動態計算停損停利點位
+                    target_sl = entry_price + (current_atr * sl_multi)
+                    target_tp = entry_price - (current_atr * tp_multi)
+                    trades.append({'time': curr_time, 'type': 'SELL', 'price': entry_price, 'desc': '空單進場'})
+                    position = -1
 
         return self.calculate_metrics(trades), trades
 
