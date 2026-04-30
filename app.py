@@ -1,50 +1,54 @@
 import streamlit as st
+import pandas as pd
 from database import MTXDatabase
 from backtest import MomentumBacktester
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="微台動能雲端監控", layout="wide")
+st.set_page_config(page_title="微台動能監控系統", layout="wide")
 
+# 初始化資料庫
 db = MTXDatabase()
 
-st.title("📈 微台指 5/15/30分 動能當沖監控")
+st.title("🚀 微台指 5/15/30分 動能當沖策略監控")
 
-# 1. 側邊欄：資料更新
+# 側邊欄控制
 with st.sidebar:
-    st.header("數據管理")
+    st.header("📊 數據控制中心")
     if st.button("🔄 更新 2024 至今數據"):
-        with st.spinner("更新中..."):
-            db.update_data()
-            st.success("資料庫已就緒")
+        with st.spinner("正在從 FinMind 抓取資料..."):
+            if db.update_data():
+                st.success("資料更新完成！")
+                st.rerun()
 
-# 2. 資料加載
+# 讀取資料
 df_raw = db.load_data()
+
+# 檢查資料庫是否為空
 if df_raw.empty:
-    st.warning("請點擊左側更新數據以啟動系統。")
+    st.info("💡 目前資料庫尚無資料，請點擊左側按鈕開始更新。")
     st.stop()
 
-# 3. 回測模式切換
-mode = st.radio("選擇分析模式", ["壓力測試 (2024至今)", "穩定性測試 (最近3個月)"], horizontal=True)
-start_date = "2024-01-01" if "壓力測試" in mode else "2026-01-27"
+# 模式選擇
+mode = st.radio("回測模式", ["壓力測試 (2024至今)", "穩定性測試 (最近3個月)"], horizontal=True)
+start_dt = "2024-01-01" if "壓力測試" in mode else (pd.Timestamp.now() - pd.Timedelta(days=90)).strftime('%Y-%m-%d')
 
-# 4. 執行計算
+# 執行策略
 tester = MomentumBacktester(df_raw)
-metrics = tester.run_strategy(start_date)
+metrics = tester.run_strategy(start_dt)
 
-# 5. 顯示數據指標
-st.subheader(f"📊 策略表現：{mode}")
-m_cols = st.columns(len(metrics))
-for i, (label, value) in enumerate(metrics.items()):
-    m_cols[i].metric(label, value)
+# 顯示績效
+st.subheader(f"📈 績效表現：{mode}")
+cols = st.columns(len(metrics))
+for i, (label, val) in enumerate(metrics.items()):
+    cols[i].metric(label, val)
 
-# 6. 即時 K 線圖
-st.subheader("📺 5分鐘 K線動能監控")
-recent_df = df_raw.tail(150)
+# 畫出即時監控 K 線
+st.subheader("📺 即時監控儀表板 (5分鐘 K線)")
+recent = df_raw.tail(200)
 fig = go.Figure(data=[go.Candlestick(
-    x=recent_df['datetime'],
-    open=recent_df['open'], high=recent_df['high'],
-    low=recent_df['low'], close=recent_df['close'],
-    name="MTX"
+    x=recent['datetime'],
+    open=recent['open'], high=recent['high'],
+    low=recent['low'], close=recent['close']
 )])
-fig.update_layout(height=500, template="plotly_dark")
+fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False)
 st.plotly_chart(fig, use_container_width=True)
