@@ -6,7 +6,7 @@ class MomentumBacktester:
         self.point_value = 10  
         self.cost = 2          
 
-    def run_strategy(self, start_date, session_type="全時段", sl_multi=1.5, tp_multi=3.0):
+    def run_strategy(self, start_date, session_type="全時段", sl_multi=1.5, tp_multi=5.0):
         try:
             df = self.df_1m.loc[start_date:].copy()
         except KeyError:
@@ -22,15 +22,12 @@ class MomentumBacktester:
         df_30m = df.resample('30min').agg({'open':'first','high':'max','low':'min','close':'last'}).dropna()
         df_5m = df.resample('5min').agg({'open':'first','high':'max','low':'min','close':'last'}).dropna()
 
-        # 確保價格為浮點數
         df_30m['close'] = df_30m['close'].astype(float)
         for col in ['open', 'high', 'low', 'close']:
             df_5m[col] = df_5m[col].astype(float)
 
-        # 1. 計算 EMA20
         df_30m['EMA20'] = df_30m['close'].ewm(span=20, adjust=False).mean()
 
-        # 2. 計算 RSI14
         diff = df_5m['close'].diff()
         up = diff.where(diff > 0, 0.0)
         down = -diff.where(diff < 0, 0.0)
@@ -40,18 +37,20 @@ class MomentumBacktester:
         df_5m['RSI'] = 100 - (100 / (1 + rs))
         df_5m['RSI'] = df_5m['RSI'].fillna(50)
 
-        # 🚀 3. 計算 ATR (14期真實波動幅度)
         tr1 = df_5m['high'] - df_5m['low']
         tr2 = (df_5m['high'] - df_5m['close'].shift(1)).abs()
         tr3 = (df_5m['low'] - df_5m['close'].shift(1)).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        df_5m['ATR'] = tr.rolling(window=14).mean().bfill() # 平滑計算並填補開頭空值
+        df_5m['ATR'] = tr.rolling(window=14).mean().bfill() 
 
         trades = []
         position = 0  
         entry_price = 0
         target_sl = 0
-        target_tp = 0
+        
+        # 移動停損專用追蹤變數
+        highest_high = 0 
+        lowest_low = 0
 
         for i in range(1, len(df_5m)):
             curr_time = df_5m.index[i]
@@ -64,44 +63,60 @@ class MomentumBacktester:
             low = df_5m['low'].iloc[i]
             rsi = df_5m['RSI'].iloc[i]
             prev_rsi = df_5m['RSI'].iloc[i-1]
-            current_atr = df_5m['ATR'].iloc[i] # 取得當下 K 線的 ATR
+            current_atr = df_5m['ATR'].iloc[i] 
 
-            if position == 1: # 多單持倉
+            if position == 1: 
+                # 🚀 動態上移停損線 (Trailing Stop)
+                if high > highest_high:
+                    highest_high = high
+                    # 隨著價格創新高，計算新的防守底線 (最高點 - ATR*倍數)
+                    trail_sl = highest_high - (current_atr * sl_multi)
+                    # 停損線只能往上，不能往下
+                    target_sl = max(target_sl, trail_sl)
+
                 if low <= target_sl:
-                    trades.append({'time': curr_time, 'type': 'SELL', 'price': target_sl, 'desc': '停損出場'})
+                    # 如果獲利已經拉開，這個 "停損" 其實是 "停利出場"
+                    desc = '移動停利出場' if target_sl > entry_price else '初始停損出場'
+                    trades.append({'time': curr_time, 'type': 'SELL', 'price': target_sl, 'desc': desc})
                     position = 0
-                elif high >= target_tp:
-                    trades.append({'time': curr_time, 'type': 'SELL', 'price': target_tp, 'desc': '停利出場'})
+                elif high >= entry_price + (current_atr * tp_multi): # 極限目標價 (防止漲停板)
+                    trades.append({'time': curr_time, 'type': 'SELL', 'price': entry_price + (current_atr * tp_multi), 'desc': '極限目標出場'})
                     position = 0
                 elif price < last_trend['EMA20'] and rsi < 50 and prev_rsi >= 50:
-                    trades.append({'time': curr_time, 'type': 'SELL', 'price': price, 'desc': '反轉平倉'})
+                    trades.append({'time': curr_time, 'type': 'SELL', 'price': price, 'desc': '動能反轉平倉'})
                     position = 0
 
-            elif position == -1: # 空單持倉
+            elif position == -1: 
+                # 🚀 動態下移停損線 (Trailing Stop)
+                if low < lowest_low:
+                    lowest_low = low
+                    trail_sl = lowest_low + (current_atr * sl_multi)
+                    # 停損線只能往下，不能往上
+                    target_sl = min(target_sl, trail_sl)
+
                 if high >= target_sl:
-                    trades.append({'time': curr_time, 'type': 'BUY', 'price': target_sl, 'desc': '停損出場'})
+                    desc = '移動停利出場' if target_sl < entry_price else '初始停損出場'
+                    trades.append({'time': curr_time, 'type': 'BUY', 'price': target_sl, 'desc': desc})
                     position = 0
-                elif low <= target_tp:
-                    trades.append({'time': curr_time, 'type': 'BUY', 'price': target_tp, 'desc': '停利出場'})
+                elif low <= entry_price - (current_atr * tp_multi):
+                    trades.append({'time': curr_time, 'type': 'BUY', 'price': entry_price - (current_atr * tp_multi), 'desc': '極限目標出場'})
                     position = 0
                 elif price > last_trend['EMA20'] and rsi > 50 and prev_rsi <= 50:
-                    trades.append({'time': curr_time, 'type': 'BUY', 'price': price, 'desc': '反轉平倉'})
+                    trades.append({'time': curr_time, 'type': 'BUY', 'price': price, 'desc': '動能反轉平倉'})
                     position = 0
 
-            if position == 0: # 空手尋找進場
+            if position == 0: 
                 if price > last_trend['EMA20'] and rsi > 50 and prev_rsi <= 50:
                     entry_price = price
-                    # 動態計算停損停利點位
+                    highest_high = price # 記錄進場後的最高價
                     target_sl = entry_price - (current_atr * sl_multi)
-                    target_tp = entry_price + (current_atr * tp_multi)
                     trades.append({'time': curr_time, 'type': 'BUY', 'price': entry_price, 'desc': '多單進場'})
                     position = 1
                     
                 elif price < last_trend['EMA20'] and rsi < 50 and prev_rsi >= 50:
                     entry_price = price
-                    # 動態計算停損停利點位
+                    lowest_low = price # 記錄進場後的最低價
                     target_sl = entry_price + (current_atr * sl_multi)
-                    target_tp = entry_price - (current_atr * tp_multi)
                     trades.append({'time': curr_time, 'type': 'SELL', 'price': entry_price, 'desc': '空單進場'})
                     position = -1
 
