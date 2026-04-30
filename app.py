@@ -65,5 +65,35 @@ if not df_raw.empty:
 
     fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
+    
+    # ================= 歷史明細與 CSV 下載區塊 =================
+    st.divider()
+    st.subheader("📝 歷史成交明細與匯出")
+    
+    if trades:
+        # 將交易紀錄轉換為 DataFrame
+        df_trades = pd.DataFrame(trades)
+        
+        # 欄位中文化與時間格式清理
+        df_trades = df_trades.rename(columns={'time': '時間', 'type': '買賣', 'price': '價格', 'desc': '動作'})
+        df_trades['時間'] = pd.to_datetime(df_trades['時間']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 在畫面上顯示可滑動的完整表格
+        st.dataframe(df_trades.set_index('時間'), use_container_width=True)
+        
+        # 轉換為 CSV 格式 (使用 utf-8-sig 確保 Excel 開啟不亂碼)
+        csv = df_trades.to_csv(index=False, encoding='utf-8-sig') 
+        
+        # Streamlit 專用下載按鈕
+        st.download_button(
+            label="📥 下載完整交易紀錄 (CSV 檔)",
+            data=csv,
+            file_name=f"MTX_trades_{strategy_mode}.csv",
+            mime="text/csv"
+        )
+    else:
+        st.write("該區間無交易紀錄。")
+    # ==============================================================
+
 else:
     st.warning("請先更新資料庫")
