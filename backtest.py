@@ -4,11 +4,10 @@ import ta
 class MomentumBacktester:
     def __init__(self, df_1m):
         self.df_1m = df_1m.set_index('datetime')
-        self.point_value = 10  # 微台每點 10 元
-        self.cost = 2          # 單邊交易成本 2 點
+        self.point_value = 10  
+        self.cost = 2          
 
     def run_strategy(self, start_date, session_type="全時段", sl_points=20, tp_points=40):
-        # 時間與日夜盤過濾
         try:
             df = self.df_1m.loc[start_date:].copy()
         except KeyError:
@@ -21,16 +20,23 @@ class MomentumBacktester:
             
         if df.empty: return {"狀態": "無資料", "交易次數": 0}, []
 
-        # 轉換時框
         df_30m = df.resample('30min').agg({'open':'first','high':'max','low':'min','close':'last'}).dropna()
         df_5m = df.resample('5min').agg({'open':'first','high':'max','low':'min','close':'last'}).dropna()
 
-        # 計算指標
-        df_30m['EMA20'] = ta.trend.ema_indicator(df_30m['close'], window=20)
-        df_5m['RSI'] = ta.momentum.rsi(df_5m['close'], window=14)
+        # 防彈機制 1: 確保價格為浮點數，防止 SQLite 讀成字串
+        df_30m['close'] = df_30m['close'].astype(float)
+        df_5m['close'] = df_5m['close'].astype(float)
+
+        # 防彈機制 2: 相容 ta 套件的新舊版本參數 (window vs n)
+        try:
+            df_30m['EMA20'] = ta.trend.ema_indicator(df_30m['close'], window=20)
+            df_5m['RSI'] = ta.momentum.rsi(df_5m['close'], window=14)
+        except TypeError:
+            df_30m['EMA20'] = ta.trend.ema_indicator(df_30m['close'], n=20)
+            df_5m['RSI'] = ta.momentum.rsi(df_5m['close'], n=14)
 
         trades = []
-        position = 0  # 0: 空手, 1: 多單, -1: 空單
+        position = 0  
         entry_price = 0
 
         for i in range(1, len(df_5m)):
@@ -45,7 +51,6 @@ class MomentumBacktester:
             rsi = df_5m['RSI'].iloc[i]
             prev_rsi = df_5m['RSI'].iloc[i-1]
 
-            # 檢查出場條件 (SL / TP / 反轉)
             if position == 1:
                 if low <= entry_price - sl_points:
                     trades.append({'time': curr_time, 'type': 'SELL', 'price': entry_price - sl_points, 'desc': '停損出場'})
@@ -68,7 +73,6 @@ class MomentumBacktester:
                     trades.append({'time': curr_time, 'type': 'BUY', 'price': price, 'desc': '反轉平倉'})
                     position = 0
 
-            # 檢查進場條件
             if position == 0:
                 if price > last_trend['EMA20'] and rsi > 50 and prev_rsi <= 50:
                     trades.append({'time': curr_time, 'type': 'BUY', 'price': price, 'desc': '多單進場'})
