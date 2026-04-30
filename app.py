@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="微台動能雲端監控", layout="wide")
 db = MTXDatabase()
 
-st.title("🚀 微台指 5/15/30分 動能當沖監控 (真實期交所資料)")
+st.title("🚀 微台指 5/15/30分 動能當沖監控 (ATR 動態風險)")
 
 with st.sidebar:
     st.header("📊 數據控制中心")
@@ -32,38 +32,36 @@ with col1:
     db_end = df_raw['datetime'].iloc[-1].strftime('%Y-%m-%d')
     mode = st.radio("回測資料庫範圍", [f"{db_start} 至 {db_end}"])
 with col2: session = st.selectbox("監控時段", ["全時段", "日盤 (08:45-13:45)", "夜盤 (15:00-05:00)"])
-with col3: sl_points = st.number_input("強制停損點數", min_value=10, max_value=100, value=20, step=5)
-with col4: tp_points = st.number_input("強制停利點數", min_value=10, max_value=200, value=40, step=5)
+# 🚀 修改為 ATR 倍數控制
+with col3: sl_multi = st.number_input("停損 ATR 倍數", min_value=0.5, max_value=5.0, value=1.5, step=0.1)
+with col4: tp_multi = st.number_input("停利 ATR 倍數", min_value=1.0, max_value=10.0, value=3.0, step=0.1)
 
 tester = MomentumBacktester(df_raw)
-metrics, trades = tester.run_strategy(start_date=db_start, session_type=session, sl_points=sl_points, tp_points=tp_points)
+metrics, trades = tester.run_strategy(start_date=db_start, session_type=session, sl_multi=sl_multi, tp_multi=tp_multi)
 
-st.subheader(f"📈 績效表現：{session} | 停損 {sl_points}點 / 停利 {tp_points}點")
+st.subheader(f"📈 績效表現：{session} | 停損 {sl_multi}x ATR / 停利 {tp_multi}x ATR")
 cols = st.columns(len(metrics))
 for i, (label, val) in enumerate(metrics.items()): cols[i].metric(label, val)
 
 st.subheader("📺 視覺化圖表：進出場與停損停利標示 (5分K)")
 recent = df_raw.tail(600) 
 
-# 🎨 1. K線在地化配色：改為台灣習慣的「紅漲綠跌」
 fig = go.Figure(data=[go.Candlestick(
     x=recent['datetime'], open=recent['open'], high=recent['high'],
     low=recent['low'], close=recent['close'], name="微台 K線",
-    increasing_line_color='#FF3333', increasing_fillcolor='#FF3333', # 紅漲
-    decreasing_line_color='#00CC00', decreasing_fillcolor='#00CC00'  # 綠跌
+    increasing_line_color='#FF3333', increasing_fillcolor='#FF3333',
+    decreasing_line_color='#00CC00', decreasing_fillcolor='#00CC00'  
 )])
 
-# ✂️ 2. 斷點縫合魔法：根據選擇的時段，裁掉沒有交易的時間
-rangebreaks = [dict(bounds=["sat", "mon"])] # 永遠隱藏週末
+rangebreaks = [dict(bounds=["sat", "mon"])] 
 if "日盤" in session:
-    rangebreaks.append(dict(bounds=["13:45", "08:45"])) # 隱藏 13:45 到隔天 08:45
+    rangebreaks.append(dict(bounds=["13:45", "08:45"])) 
 elif "夜盤" in session:
-    rangebreaks.append(dict(bounds=["05:00", "15:00"])) # 隱藏 05:00 到下午 15:00
-else: # 全時段
-    rangebreaks.append(dict(bounds=["05:00", "08:45"])) # 隱藏早上的休息空檔
-    rangebreaks.append(dict(bounds=["13:45", "15:00"])) # 隱藏下午的休息空檔
+    rangebreaks.append(dict(bounds=["05:00", "15:00"])) 
+else: 
+    rangebreaks.append(dict(bounds=["05:00", "08:45"])) 
+    rangebreaks.append(dict(bounds=["13:45", "15:00"])) 
 
-# 標記進出場訊號
 if trades:
     r_start = recent['datetime'].iloc[0]
     rt = [t for t in trades if t['time'] >= r_start]
@@ -85,7 +83,6 @@ if trades:
                 name=desc
             ))
 
-# 🌟 3. 版面精緻化：加入無縫 X 軸、優化網格線
 fig.update_xaxes(
     rangebreaks=rangebreaks, 
     showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.2)', zeroline=False
@@ -97,11 +94,10 @@ fig.update_layout(
     height=700, 
     xaxis_rangeslider_visible=False,
     margin=dict(l=40, r=40, t=40, b=40),
-    hovermode='x unified' # 滑鼠游標對齊效果
+    hovermode='x unified'
 )
 
-# 讓 Streamlit 接管背景主題，完美融入您的系統
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, use_container_width=True, theme=None)
 
 with st.expander("📝 展開查看近期交易明細"):
     if trades:
