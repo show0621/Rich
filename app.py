@@ -36,8 +36,6 @@ with col3: sl_points = st.number_input("強制停損點數", min_value=10, max_v
 with col4: tp_points = st.number_input("強制停利點數", min_value=10, max_value=200, value=40, step=5)
 
 tester = MomentumBacktester(df_raw)
-
-# 💡 這裡已經修正：將 start_dt 改為 start_date
 metrics, trades = tester.run_strategy(start_date=db_start, session_type=session, sl_points=sl_points, tp_points=tp_points)
 
 st.subheader(f"📈 績效表現：{session} | 停損 {sl_points}點 / 停利 {tp_points}點")
@@ -45,7 +43,8 @@ cols = st.columns(len(metrics))
 for i, (label, val) in enumerate(metrics.items()): cols[i].metric(label, val)
 
 st.subheader("📺 視覺化圖表：進出場與停損停利標示 (5分K)")
-recent = df_raw.tail(300) 
+# 💡 將視野擴大到 600 根 K 線 (約兩個半天)，確保看得到完整的交易閉環
+recent = df_raw.tail(600) 
 fig = go.Figure(data=[go.Candlestick(
     x=recent['datetime'], open=recent['open'], high=recent['high'],
     low=recent['low'], close=recent['close'], name="微台 K線"
@@ -55,20 +54,35 @@ if trades:
     r_start = recent['datetime'].iloc[0]
     rt = [t for t in trades if t['time'] >= r_start]
     
+    # 💡 修改顏色與增加邊框，確保在亮色/暗色背景都極度清晰
     signals = {
-        '多單進場': ('triangle-up', 14, 'red'), '空單進場': ('triangle-down', 14, 'green'),
-        '停利出場': ('star', 14, 'gold'), '停損出場': ('x', 12, 'white'), '反轉平倉': ('square', 10, 'blue')
+        '多單進場': ('triangle-up', 16, '#FF3333'),    # 亮紅色
+        '空單進場': ('triangle-down', 16, '#00CC00'),  # 亮綠色
+        '停利出場': ('star', 18, '#FFD700'),           # 黃金星
+        '停損出場': ('x', 14, '#000000'),              # 黑色大叉叉
+        '反轉平倉': ('square', 12, '#3366FF')          # 藍色方塊
     }
+    
     for desc, (sym, size, color) in signals.items():
         subset = [t for t in rt if t['desc'] == desc]
         if subset:
             fig.add_trace(go.Scatter(
                 x=[t['time'] for t in subset], y=[t['price'] for t in subset],
-                mode='markers', marker=dict(symbol=sym, size=size, color=color), name=desc
+                mode='markers', 
+                marker=dict(
+                    symbol=sym, 
+                    size=size, 
+                    color=color,
+                    # 幫除了叉叉以外的圖標加上黑色外框
+                    line=dict(width=1.5, color='black') if sym != 'x' else None 
+                ), 
+                name=desc
             ))
 
 fig.update_layout(height=650, template="plotly_dark", xaxis_rangeslider_visible=False)
-st.plotly_chart(fig, use_container_width=True)
+
+# 💡 關鍵修復：加入 theme=None，強制 Streamlit 尊重我們設定的暗色背景與圖標設計
+st.plotly_chart(fig, use_container_width=True, theme=None)
 
 with st.expander("📝 展開查看近期交易明細"):
     if trades:
