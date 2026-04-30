@@ -8,7 +8,7 @@ class MTXDatabase:
         self.dl = DataLoader()
 
     def update_data(self, start_date="2024-01-01"):
-        """獲取微台(MTX)資料並寫入 SQLite"""
+        """抓取資料並存入 SQLite"""
         try:
             df = self.dl.taiwan_futures_daily(
                 futures_id="MTX",
@@ -16,12 +16,17 @@ class MTXDatabase:
             )
             if not df.empty:
                 df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'])
-                # 使用 replace 確保資料是最新的
+                # 儲存到 SQL
                 df.to_sql("kline_1m", self.conn, if_exists="replace", index=False)
                 return True
         except Exception as e:
-            print(f"Error updating: {e}")
+            print(f"Update failed: {e}")
         return False
 
     def load_data(self):
-        return pd.read_sql("SELECT * FROM kline_1m ORDER BY datetime ASC", self.conn, parse_dates=['datetime'])
+        """讀取資料，若表不存在則回傳空 DataFrame"""
+        try:
+            query = "SELECT * FROM kline_1m ORDER BY datetime ASC"
+            return pd.read_sql(query, self.conn, parse_dates=['datetime'])
+        except:
+            return pd.DataFrame()
