@@ -3,7 +3,6 @@ import numpy as np
 
 class MomentumBacktester:
     def __init__(self, df_1m):
-        # 預防性轉換，確保日期格式正確
         self.df_1m = df_1m.copy()
         if 'datetime' in self.df_1m.columns:
             self.df_1m['datetime'] = pd.to_datetime(self.df_1m['datetime'])
@@ -20,29 +19,32 @@ class MomentumBacktester:
         except:
             df = self.df_1m.copy()
             
+        # --- 0. 精確時段選擇 ---
         if "日盤" in session_type:
             df = df.between_time('08:45', '13:45')
+        elif "夜盤" in session_type:
+            # 跨日處理：15:00 到 隔天 05:00
+            df = df.between_time('15:00', '05:00')
             
         if df.empty: return {"狀態": "無資料", "交易次數": 0}, []
 
-        # --- 1. 時框轉換與欄位預建 (修復 KeyError 關鍵) ---
+        # --- 1. 時框轉換與欄位預建 ---
         df_main = df.resample(timeframe).agg({
             'open':'first','high':'max','low':'min','close':'last', 'volume':'sum'
         }).dropna()
         for col in ['open', 'high', 'low', 'close']: df_main[col] = df_main[col].astype(float)
         
-        # 初始化所有可能用到的欄位，避免策略切換時報錯
         df_main['pivot_h'] = np.nan
         df_main['pivot_l'] = np.nan
         df_main['VOL_MA'] = df_main['volume'].rolling(window=20).mean()
         df_main['ATR'] = (df_main['high'] - df_main['low']).rolling(window=20).mean().bfill()
         
-        # --- 2. 趨勢與技術指標計算 ---
-        # 長線趨勢濾網 (60分 EMA200)
+        # 長線趨勢濾網
         df_60m = df.resample('60min').agg({'close':'last'}).dropna()
         df_60m['EMA200'] = df_60m['close'].ewm(span=200, adjust=False).mean()
         df_main = df_main.join(df_60m[['EMA200']].reindex(df_main.index, method='ffill'))
 
+        # --- 2. 各策略技術指標計算 ---
         if strategy_type == "趨勢線突破":
             window = params.get('pivot_window', 5)
             for i in range(window, len(df_main) - window):
@@ -59,16 +61,29 @@ class MomentumBacktester:
             ema_down = down.ewm(alpha=alpha, adjust=False).mean()
             df_main['RSI'] = 100 - (100 / (1 + ema_up / ema_down))
 
+        elif strategy_type == "KD波段":
+            low_min = df_main['low'].rolling(window=params.get('kd_period', 9)).min()
+            high_max = df_main['high'].rolling(window=params.get('kd_period', 9)).max()
+            rsv = (df_main['close'] - low_min) / (high_max - low_min) * 100
+            df_main['K'] = rsv.ewm(com=2, adjust=False).mean()
+            df_main['D'] = df_main['K'].ewm(com=2, adjust=False).mean()
+
+        elif strategy_type == "MACD波段":
+            fast = df_main['close'].ewm(span=params.get('macd_fast', 12), adjust=False).mean()
+            slow = df_main['close'].ewm(span=params.get('macd_slow', 26), adjust=False).mean()
+            df_main['DIF'] = fast - slow
+            df_main['DEA'] = df_main['DIF'].ewm(span=params.get('macd_sig', 9), adjust=False).mean()
+
         # --- 3. 核心回測迴圈 ---
         trades = []
         position = 0; entry_price = 0; target_sl = 0; highest_high = 0; lowest_low = 0
         last_h_pivots = []; last_l_pivots = []
         window = params.get('pivot_window', 5)
 
-        for i in range(10, len(df_main)):
-            curr_time = df_main.index[i]; row = df_main.iloc[i]
+        for i in range(20, len(df_main)):
+            curr_time = df_main.index[i]; row = df_main.iloc[i]; prev = df_main.iloc[i-1]
             
-            # 動態趨勢線更新邏輯 (追隨 K 棒重劃線)
+            # 趨勢線重劃邏輯
             if not np.isnan(df_main['pivot_h'].iloc[i-window]):
                 last_h_pivots.append((i-window, df_main['pivot_h'].iloc[i-window]))
                 if len(last_h_pivots) > 2: last_h_pivots.pop(0)
@@ -99,7 +114,7 @@ class MomentumBacktester:
                         is_exit = True
                 
                 if is_exit:
-                    trades.append({'time': curr_time, 'type': 'EXIT', 'price': row['close'], 'desc': '趨勢反轉/停損', 'cost': cost_points})
+                    trades.append({'time': curr_time, 'type': 'EXIT', 'price': row['close'], 'desc': '策略反轉/停損', 'cost': cost_points})
                     position = 0
 
             # 進場邏輯
@@ -115,12 +130,20 @@ class MomentumBacktester:
                 elif strategy_type == "RSI波段":
                     if row['RSI'] < params.get('rsi_lower', 30) and is_long_trend: entry_signal = 1
                     elif row['RSI'] > params.get('rsi_upper', 70) and is_short_trend: entry_signal = -1
+                elif strategy_type == "KD波段":
+                    # KD 黃金交叉/死亡交叉
+                    if prev['K'] < prev['D'] and row['K'] > row['D'] and is_long_trend: entry_signal = 1
+                    elif prev['K'] > prev['D'] and row['K'] < row['D'] and is_short_trend: entry_signal = -1
+                elif strategy_type == "MACD波段":
+                    # MACD 柱狀體翻正/翻負
+                    if prev['DIF'] < prev['DEA'] and row['DIF'] > row['DEA'] and is_long_trend: entry_signal = 1
+                    elif prev['DIF'] > prev['DEA'] and row['DIF'] < row['DEA'] and is_short_trend: entry_signal = -1
 
                 if entry_signal != 0:
                     position = entry_signal; entry_price = row['close']
                     highest_high = row['high']; lowest_low = row['low']
                     target_sl = entry_price - (row['ATR'] * sl_multi) if position == 1 else entry_price + (row['ATR'] * sl_multi)
-                    trades.append({'time': curr_time, 'type': 'BUY' if position == 1 else 'SELL', 'price': row['close'], 'desc': '帶量突破進場', 'cost': cost_points})
+                    trades.append({'time': curr_time, 'type': 'BUY' if position == 1 else 'SELL', 'price': row['close'], 'desc': '指標訊號進場', 'cost': cost_points})
 
         return self.calculate_metrics(trades, cost_points), trades
 
