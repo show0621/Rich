@@ -5,155 +5,89 @@ from database import MTXDatabase
 from backtest import MomentumBacktester
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="微台趨勢型態監控", layout="wide")
+st.set_page_config(page_title="微台專業型態戰情室", layout="wide")
 db = MTXDatabase()
 
-# ================= 1. 盤勢雷達核心函式 (修復版) =================
-def detect_market_regime(df_1m):
-    """
-    利用近期 RSI 表現反推市場狀態。
-    """
-    if df_1m.empty or len(df_1m) < 300:
-        return "資料不足", "gray"
-        
-    recent_df = df_1m.tail(300).copy()
-    start_time_val = recent_df['datetime'].iloc[0]
+# --- 盤勢偵測雷達 ---
+def detect_market_regime(df_raw):
+    if df_raw.empty or len(df_raw) < 500: return "資料不足", "gray"
+    # 使用 15分K RSI 盲測最近勝率
+    test_df = df_raw.tail(500).copy()
+    start_t = test_df['datetime'].iloc[0] # 修復索引錯誤
+    tester = MomentumBacktester(test_df)
+    res, trades = tester.run_strategy("RSI波段", start_t, timeframe='15min', params={'rsi_period':14, 'rsi_upper':70, 'rsi_lower':30})
     
-    radar_tester = MomentumBacktester(recent_df)
-    # 使用標準參數進行盲測
-    radar_params = {'rsi_period': 14, 'rsi_upper': 70, 'rsi_lower': 30}
-    
-    try:
-        # 注意：這裡的策略名稱需與 backtest.py 裡的 "RSI波段" 一致
-        _, trades = radar_tester.run_strategy(
-            "RSI波段", 
-            start_time_val, 
-            "全時段", 
-            params=radar_params,
-            timeframe='5min' # 雷達用短時框探測靈敏度
-        )
-        
-        if not trades or len(trades) < 4:
-            return "波動過低 (無訊號)", "gray"
-            
-        profits = []
-        for i in range(0, len(trades)-1, 2):
-            en, ex = trades[i], trades[i+1]
-            diff = (ex['price'] - en['price']) if en['type'] == 'BUY' else (en['price'] - ex['price'])
-            profits.append(diff)
-            
-        win_rate = len([p for p in profits if p > 0]) / len(profits)
-        
-        if win_rate >= 0.6:
-            return "震盪盤 (適合 RSI/布林)", "green"
-        elif win_rate <= 0.4:
-            return "趨勢盤 (適合 趨勢線/突破)", "red"
-        else:
-            return "混沌不明 (觀望為宜)", "orange"
-    except Exception as e:
-        return "雷達校準中...", "gray"
+    if res['交易次數'] < 3: return "波動過低", "gray"
+    win_rate = float(res['勝率'].replace('%',''))
+    if win_rate >= 55: return "震盪盤 (適合 RSI)", "green"
+    elif win_rate <= 40: return "趨勢盤 (適合 趨勢線突破)", "red"
+    return "市場混沌", "orange"
 
-# ================= 2. 主程式介面 =================
-st.title("📐 微台指：動能趨勢線與盤勢監控")
+st.title("🛡️ 微台指：動態趨勢線與量能監控系統")
 
 df_raw = db.load_data()
 
 with st.sidebar:
     st.header("📊 系統控制")
     if st.button("📥 更新期交所資料"):
-        with st.spinner("資料同步中..."):
-            db.update_data(target_days=3)
-            st.rerun()
+        with st.spinner("同步中..."): db.update_data(target_days=3); st.rerun()
     
-    # 📡 重新上線：盤勢雷達
-    regime = "資料不足"
-    color = "gray"
+    regime = "資料不足"; color = "gray"
     if not df_raw.empty:
         regime, color = detect_market_regime(df_raw)
         st.divider()
         st.markdown(f"### 📡 盤勢雷達: :{color}[**{regime}**]")
-        st.caption("偵測邏輯：利用 RSI 近期盲測勝率反推市場慣性。")
     
     st.divider()
-    strategy_mode = st.selectbox("核心策略", ["趨勢線突破", "RSI波段", "布林波段"])
+    strategy_mode = st.selectbox("策略選擇", ["趨勢線突破", "RSI波段"])
     tf = st.selectbox("主交易時框", ["30min", "60min", "15min", "5min"], index=0)
     
-    st.divider()
-    st.subheader("🛡️ 風控與參數建議")
+    st.subheader("📐 進階參數")
+    p_win = st.slider("轉折識別窗口 (Pivots)", 3, 15, 5)
+    v_mul = st.slider("量能爆發倍數", 1.0, 3.0, 1.2, 0.1)
     
-    # 💡 重新上線：自動參數建議邏輯
-    if regime == "震盪盤 (適合 RSI/布林)":
-        st.info("💡 建議：切換至 RSI 或布林策略。縮短停損 (1.2x - 1.5x ATR)，採固定目標停利。")
-    elif regime == "趨勢盤 (適合 趨勢線/突破)":
-        st.warning("💡 建議：優先使用趨勢線策略。放寬停損 (2.0x+ ATR)，讓利潤奔跑。")
-    elif regime == "混沌不明 (觀望為宜)":
-        st.info("💡 建議：盤勢不明，建議將『轉折窗口』調大，過濾雜訊。")
+    st.subheader("🛡️ 風控設定")
+    sl_m = st.slider("移動停損 ATR", 1.0, 5.0, 2.0)
+    tp_m = st.slider("目標停利 ATR", 3.0, 20.0, 10.0)
+    cost_p = st.number_input("單邊成本 (含稅/費/滑價)", value=3.5, step=0.5)
 
-    sl_multi = st.slider("移動停損 ATR 倍數", 1.0, 5.0, 2.0, 0.1)
-    tp_multi = st.slider("目標停利 ATR 倍數", 3.0, 20.0, 10.0, 0.5)
-    
-    st.divider()
-    st.subheader("💸 成本與型態設定")
-    pivot_w = st.slider("轉折點識別窗口", 3, 15, 5)
-    cost_pts = st.number_input("單邊成本點數", value=3.5, step=0.5)
-
-# ================= 3. 執行回測與繪圖 =================
+# --- 執行回測 ---
 if not df_raw.empty:
-    params = {
-        'pivot_window': pivot_w, 
-        'rsi_period': 14, 
-        'rsi_upper': 70, 
-        'rsi_lower': 30, 
-        'bb_period': 20, 
-        'bb_std': 2.0
-    }
-    
+    # 建議顯示
+    if "趨勢盤" in regime: st.warning("💡 雷達警告：趨勢強勁，建議使用『趨勢線突破』策略並放寬停利。")
+    elif "震盪盤" in regime: st.info("💡 雷達提示：盤整蓄勢中，RSI 逆勢操作勝率較高。")
+
     tester = MomentumBacktester(df_raw)
+    params = {'pivot_window': p_win, 'volume_multi': v_mul, 'rsi_period': 14, 'rsi_upper': 70, 'rsi_lower': 30}
+    
     metrics, trades = tester.run_strategy(
-        strategy_mode, "2024-01-01", "全時段 (含夜盤)", 
-        sl_multi, tp_multi, params, 
-        cost_points=cost_pts, timeframe=tf
+        strategy_mode, "2024-01-01", "全時段", 
+        sl_m, tp_m, params, cost_points=cost_p, timeframe=tf
     )
     
-    # 績效看板
-    cols = st.columns(len(metrics))
-    for i, (k, v) in enumerate(metrics.items()):
-        cols[i].metric(k, v)
+    # 績效顯示
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("勝率", metrics.get("勝率", "0%"))
+    c2.metric("淨獲利", metrics.get("淨獲利", "0 TWD"))
+    c3.metric("交易次數", metrics.get("交易次數", 0))
+    c4.metric("期望值/筆", metrics.get("期望值", "0"))
 
     # 繪圖
     recent = df_raw.tail(1000)
-    fig = go.Figure(data=[go.Candlestick(
-        x=recent['datetime'], 
-        open=recent['open'], 
-        high=recent['high'], 
-        low=recent['low'], 
-        close=recent['close'], 
-        increasing_line_color='#FF3333', 
-        decreasing_line_color='#00CC00'
-    )])
+    fig = go.Figure(data=[go.Candlestick(x=recent['datetime'], open=recent['open'], high=recent['high'], low=recent['low'], close=recent['close'], increasing_line_color='#FF3333', decreasing_line_color='#00CC00')])
     
     if trades:
         rt = [t for t in trades if t['time'] >= recent['datetime'].iloc[0]]
         for t in rt:
-            color = 'red' if 'BUY' in t['type'] else 'green'
-            fig.add_annotation(
-                x=t['time'], y=t['price'], text=t['desc'], 
-                showarrow=True, arrowhead=1, bgcolor=color, font=dict(color='white')
-            )
+            fig.add_annotation(x=t['time'], y=t['price'], text=t['desc'], showarrow=True, arrowhead=1, bgcolor='red' if 'BUY' in t['type'] else 'green', font=dict(color='white'))
 
-    fig.update_layout(height=650, template="plotly_dark", xaxis_rangeslider_visible=False)
+    fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
 
-    # 歷史明細與下載
-    st.divider()
-    if trades:
-        df_trades = pd.DataFrame(trades).rename(columns={'time': '時間', 'type': '買賣', 'price': '價格', 'desc': '動作'})
-        df_trades['時間'] = pd.to_datetime(df_trades['時間']).dt.strftime('%Y-%m-%d %H:%M:%S')
-        st.dataframe(df_trades.set_index('時間'), use_container_width=True)
-        
-        csv = df_trades.to_csv(index=False, encoding='utf-8-sig') 
-        st.download_button(label="📥 下載完整交易紀錄 (CSV 檔)", data=csv, file_name=f"MTX_{strategy_mode}.csv", mime="text/csv")
-    else:
-        st.write("該區間目前無交易訊號，請試著縮小『轉折窗口』或『切換時框』。")
+    with st.expander("📝 歷史成交明細"):
+        if trades:
+            df_t = pd.DataFrame(trades).rename(columns={'time':'時間','type':'買賣','price':'價格','desc':'動作'})
+            st.dataframe(df_t.set_index('時間'), use_container_width=True)
+            st.download_button("📥 下載 CSV", df_t.to_csv(index=False, encoding='utf-8-sig'), f"MTX_{strategy_mode}.csv", "text/csv")
 else:
     st.warning("請更新資料庫")
